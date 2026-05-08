@@ -1,0 +1,42 @@
+trading:
+  symbol: XAUUSD
+  timeframe: M5
+  higher_timeframes: ["M15","M30", "H1", "H4"]
+  require_mtf_alignment: true
+  bars: 5000
+  paper_mode: true
+  confidence_threshold: 0.60
+  magic_number: 260507
+  allowed_sessions: ["london", "new_york", "overlap","asia"]
+
+risk:
+  account_currency: USD
+  risk_per_trade: 0.005
+  max_daily_loss: 0.03
+  max_open_trades: 5
+  max_spread_points: 500
+  min_atr_points: 20
+  max_atr_points: 1000
+  max_slippage_points: 2000
+  kill_switch_file: config/kill_switch
+
+smc:
+  swing_window: 5
+  equal_level_tolerance_atr: 0.12
+  liquidity_sweep_lookback: 20
+  order_block_lookback: 12
+  fvg_min_atr_fraction: 0.10
+
+backtest:
+  initial_equity: 10000
+  commission_per_lot: 7.0
+  slippage_points: 500
+  spread_points: 500
+  point_value: 0.01
+  lot_size: 0.01
+  contract_size: 100
+  sizing_mode: fixed_lot
+
+paths:
+  model_path: ai/models/model.pkl
+  database_url: sqlite:///database/trading_journal.sqlite

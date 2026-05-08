@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+.env
+logs/
+database/*.sqlite
+database/*.sqlite-*
+
+ai/models/*.pkl
+ai/models/*.json
+ai/models/*.csv
+
+*.log
