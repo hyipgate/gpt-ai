@@ -13,7 +13,7 @@ import pandas as pd
 from ai.features import add_technical_features, build_features
 from ai.inference import ModelScorer
 from ai.regime import detect_market_regime
-from ai.setup_filter import SetupFilterConfig, filter_valid_setups
+from ai.setup_filter import SetupFilterConfig, filter_valid_setups, infer_setup_direction
 from core.config import load_config
 from core.execution_engine import ExecutionEngine, OrderRequest
 from core.logger import TradeLog, TradingJournal, configure_logging
@@ -91,22 +91,45 @@ def evaluate_market(
                 commission_per_lot=config.backtest.commission_per_lot,
             ),
         ).update_open_trades(symbol, df)
-    df = detect_market_regime(build_structure(df, config))
-    valid_setups = filter_valid_setups(
-        df,
-        SetupFilterConfig(
-            min_atr_points=config.risk.min_atr_points,
-            max_spread_points=config.risk.max_spread_points,
-            point_value=config.backtest.point_value,
-            require_london_or_ny=True,
-        ),
-    )
+    df = build_structure(df, config)
+    if config.research.use_regime_detection:
+        df = detect_market_regime(df)
+    else:
+        df["regime_id"] = 0
+        df["regime"] = "disabled"
     df["valid_setup"] = False
     df["setup_direction"] = 0
     df["setup_quality_rule_score"] = 0.0
-    for column in ("valid_setup", "setup_direction", "setup_quality_rule_score"):
-        if column in valid_setups:
-            df.loc[valid_setups.index, column] = valid_setups[column]
+    if config.research.use_quant_research_pipeline and config.research.use_setup_filter:
+        valid_setups = filter_valid_setups(
+            df,
+            SetupFilterConfig(
+                min_atr_points=config.risk.min_atr_points,
+                max_spread_points=config.risk.max_spread_points,
+                point_value=config.backtest.point_value,
+                require_london_or_ny=config.research.require_london_or_ny_for_research,
+            ),
+        )
+        setup_columns = (
+            "valid_setup",
+            "setup_direction",
+            "setup_quality_rule_score",
+            "liquidity_support",
+            "liquidity_or_inducement",
+            "choch_confirmed",
+            "order_block_exists",
+            "ob_support",
+            "session_ok",
+            "volatility_ok",
+            "spread_ok",
+        )
+        for column in setup_columns:
+            if column in valid_setups:
+                df.loc[valid_setups.index, column] = valid_setups[column]
+    else:
+        df["setup_direction"] = infer_setup_direction(df)
+        df["valid_setup"] = df["setup_direction"].ne(0)
+        df["setup_quality_rule_score"] = df["valid_setup"].astype(float)
     features = build_features(df)
     scorer = ModelScorer(config.paths.model_path, threshold=config.trading.confidence_threshold)
     prediction = scorer.score(features)

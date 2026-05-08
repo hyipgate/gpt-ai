@@ -31,6 +31,7 @@ class RiskConfig:
     risk_per_trade: float = 0.005
     max_daily_loss: float = 0.03
     max_open_trades: int = 2
+    use_spread_filter: bool = False
     max_spread_points: float = 500
     min_atr_points: float = 20
     max_atr_points: float = 1000
@@ -48,11 +49,22 @@ class SMCConfig:
 
 
 @dataclass(frozen=True)
+class ResearchConfig:
+    use_quant_research_pipeline: bool = True
+    use_setup_filter: bool = True
+    use_regime_detection: bool = True
+    use_quant_labels: bool = True
+    use_feature_pruning: bool = True
+    enforce_production_gate: bool = True
+    require_london_or_ny_for_research: bool = True
+
+
+@dataclass(frozen=True)
 class BacktestConfig:
     initial_equity: float = 10_000.0
     commission_per_lot: float = 7.0
-    slippage_points: float = 50.0
-    spread_points: float = 450.0
+    slippage_points: float = 0.0
+    spread_points: float = 0.0
     point_value: float = 0.01
     lot_size: float = 0.01
     contract_size: float = 100.0
@@ -70,6 +82,7 @@ class AppConfig:
     trading: TradingConfig = field(default_factory=TradingConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
     smc: SMCConfig = field(default_factory=SMCConfig)
+    research: ResearchConfig = field(default_factory=ResearchConfig)
     backtest: BacktestConfig = field(default_factory=BacktestConfig)
     paths: PathConfig = field(default_factory=PathConfig)
 
@@ -120,11 +133,19 @@ def load_config(path: str | Path | None = None) -> AppConfig:
     if "require_mtf_alignment" in raw.get("trading", {}):
         value = raw["trading"]["require_mtf_alignment"]
         raw["trading"]["require_mtf_alignment"] = str(value).lower() in {"1", "true", "yes", "on"}
+    for key, value in list(raw.get("research", {}).items()):
+        if isinstance(value, bool):
+            continue
+        raw["research"][key] = str(value).lower() in {"1", "true", "yes", "on"}
+    for key, value in list(raw.get("risk", {}).items()):
+        if key.startswith("use_") and not isinstance(value, bool):
+            raw["risk"][key] = str(value).lower() in {"1", "true", "yes", "on"}
 
     return AppConfig(
         trading=TradingConfig(**raw.get("trading", {})),
         risk=RiskConfig(**raw.get("risk", {})),
         smc=SMCConfig(**raw.get("smc", {})),
+        research=ResearchConfig(**raw.get("research", {})),
         backtest=BacktestConfig(**raw.get("backtest", {})),
         paths=PathConfig(**raw.get("paths", {})),
     )

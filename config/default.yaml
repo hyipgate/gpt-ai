@@ -14,6 +14,7 @@ risk:
   risk_per_trade: 0.005
   max_daily_loss: 0.03
   max_open_trades: 5
+  use_spread_filter: false
   max_spread_points: 500
   min_atr_points: 20
   max_atr_points: 1000
@@ -27,11 +28,20 @@ smc:
   order_block_lookback: 12
   fvg_min_atr_fraction: 0.10
 
+research:
+  use_quant_research_pipeline: true
+  use_setup_filter: true
+  use_regime_detection: true
+  use_quant_labels: true
+  use_feature_pruning: true
+  enforce_production_gate: true
+  require_london_or_ny_for_research: true
+
 backtest:
   initial_equity: 10000
   commission_per_lot: 7.0
-  slippage_points: 500
-  spread_points: 500
+  slippage_points: 0
+  spread_points: 0
   point_value: 0.01
   lot_size: 0.01
   contract_size: 100

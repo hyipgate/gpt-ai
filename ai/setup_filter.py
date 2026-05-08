@@ -80,6 +80,14 @@ def filter_valid_setups(df: pd.DataFrame, config: SetupFilterConfig | None = Non
     ob_support = _series(out, "active_ob_direction").eq(direction) | _series(out, "active_ob_direction").eq(0)
 
     out["setup_direction"] = direction
+    out["liquidity_support"] = liquidity_support.astype(int)
+    out["liquidity_or_inducement"] = recent_liquidity_or_inducement.astype(int)
+    out["choch_confirmed"] = choch_confirmed.astype(int)
+    out["order_block_exists"] = order_block_exists.astype(int)
+    out["ob_support"] = ob_support.astype(int)
+    out["session_ok"] = session_ok.astype(int)
+    out["volatility_ok"] = volatility_ok.astype(int)
+    out["spread_ok"] = spread_ok.astype(int)
     out["valid_setup"] = (
         direction.ne(0)
         & recent_liquidity_or_inducement

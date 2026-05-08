@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 
 from ai.features import build_features
-from ai.labels import LabelConfig, create_quant_labels
+from ai.labels import LabelConfig, create_outcome_labels, create_quant_labels
 from ai.evaluate import EvaluationConfig, classification_metrics, optimize_threshold
 from ai.regime import detect_market_regime
 from ai.setup_filter import SetupFilterConfig, filter_valid_setups
@@ -38,25 +38,54 @@ def main() -> None:
     finally:
         connector.shutdown()
 
-    structured = detect_market_regime(build_structure(df, config))
-    valid_setups = filter_valid_setups(
-        structured,
-        SetupFilterConfig(
-            min_atr_points=config.risk.min_atr_points,
-            max_spread_points=config.risk.max_spread_points,
-            point_value=config.backtest.point_value,
-            require_london_or_ny=True,
-        ),
-    )
+    structured = build_structure(df, config)
+    if config.research.use_regime_detection:
+        structured = detect_market_regime(structured)
+    else:
+        structured["regime_id"] = 0
+        structured["regime"] = "disabled"
+
     structured["valid_setup"] = False
     structured["setup_direction"] = 0
     structured["setup_quality_rule_score"] = 0.0
-    for column in ("valid_setup", "setup_direction", "setup_quality_rule_score"):
+    if config.research.use_quant_research_pipeline and config.research.use_setup_filter:
+        valid_setups = filter_valid_setups(
+            structured,
+            SetupFilterConfig(
+                min_atr_points=config.risk.min_atr_points,
+                max_spread_points=config.risk.max_spread_points,
+                point_value=config.backtest.point_value,
+                require_london_or_ny=config.research.require_london_or_ny_for_research,
+            ),
+        )
+    setup_columns = (
+        "valid_setup",
+        "setup_direction",
+        "setup_quality_rule_score",
+        "liquidity_support",
+        "liquidity_or_inducement",
+        "choch_confirmed",
+        "order_block_exists",
+        "ob_support",
+        "session_ok",
+        "volatility_ok",
+        "spread_ok",
+    )
+    for column in setup_columns:
         if column in valid_setups:
             structured.loc[valid_setups.index, column] = valid_setups[column]
+    else:
+        from ai.setup_filter import infer_setup_direction
+
+        structured["setup_direction"] = infer_setup_direction(structured)
+        structured["valid_setup"] = structured["setup_direction"].ne(0)
+        structured["setup_quality_rule_score"] = structured["valid_setup"].astype(float)
 
     X_full = build_features(structured)
-    outcomes = create_quant_labels(structured, LabelConfig(reward_r=2.0, require_valid_setup=True))
+    if config.research.use_quant_research_pipeline and config.research.use_quant_labels:
+        outcomes = create_quant_labels(structured, LabelConfig(reward_r=2.0, require_valid_setup=True))
+    else:
+        outcomes = create_outcome_labels(structured, LabelConfig(reward_r=2.0, require_valid_setup=False))
     setup_mask = structured["valid_setup"].astype(bool) & outcomes["direction"].ne(0)
     X_candidates = X_full.loc[setup_mask]
     y_candidates = outcomes.loc[setup_mask, "label"].astype(int)
@@ -64,8 +93,11 @@ def main() -> None:
     directions = outcomes["direction"].where(setup_mask, 0).fillna(0).astype(int)
     if len(X_candidates) < 100:
         raise ValueError(f"Only {len(X_candidates)} valid setups found. Increase bars or loosen setup filter thresholds.")
-    selected_features = select_informative_features(X_candidates, y_candidates, kind=args.model)
-    X_candidates = X_candidates[selected_features]
+    if config.research.use_feature_pruning:
+        selected_features = select_informative_features(X_candidates, y_candidates, kind=args.model)
+        X_candidates = X_candidates[selected_features]
+    else:
+        selected_features = list(X_candidates.columns)
 
     wf_metrics, candidate_probs = walk_forward_validate(
         X_candidates,
@@ -92,7 +124,7 @@ def main() -> None:
         contract_size=config.backtest.contract_size,
         sizing_mode=config.backtest.sizing_mode,
         confidence_threshold=config.trading.confidence_threshold,
-        max_spread_points=config.risk.max_spread_points,
+        max_spread_points=config.risk.max_spread_points if config.risk.use_spread_filter else None,
         min_atr_points=config.risk.min_atr_points,
     )
     threshold, threshold_table = optimize_threshold(
@@ -124,12 +156,14 @@ def main() -> None:
     selected_threshold = float(evaluation["selected_threshold"])
     positives = int(y_candidates.sum())
     backtest_metrics = evaluation["backtest"]
-    approved_for_production = (
-        positives >= 20
-        and backtest_metrics.get("trades", 0) >= args.min_trades
-        and backtest_metrics.get("profit_factor", 0) > 1.05
-        and backtest_metrics.get("expectancy_r", 0) > 0
-    )
+    approved_for_production = True
+    if config.research.enforce_production_gate:
+        approved_for_production = (
+            positives >= 20
+            and backtest_metrics.get("trades", 0) >= args.min_trades
+            and backtest_metrics.get("profit_factor", 0) > 1.05
+            and backtest_metrics.get("expectancy_r", 0) > 0
+        )
     model_path = config.paths.model_path if approved_for_production else "ai/models/rejected_candidate_model.pkl"
     bundle = train_quality_bundle(
         X_candidates,

@@ -9,8 +9,7 @@ logs/
 database/*.sqlite
 database/*.sqlite-*
 
-ai/models/*.pkl
-ai/models/*.json
-ai/models/*.csv
+ai/models/
 
 *.log
+* - Copy.py

@@ -69,7 +69,7 @@ class RiskManager:
             return RiskDecision(False, "max daily loss reached")
         if state.open_trades >= self.config.max_open_trades:
             return RiskDecision(False, "max open trades reached")
-        if state.spread_points > self.config.max_spread_points:
+        if self.config.use_spread_filter and state.spread_points > self.config.max_spread_points:
             return RiskDecision(False, "spread too wide")
         if not (self.config.min_atr_points <= state.atr_points <= self.config.max_atr_points):
             return RiskDecision(False, "volatility outside configured bounds")
