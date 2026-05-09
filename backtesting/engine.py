@@ -68,25 +68,28 @@ class BacktestEngine:
                 volume_lots = self.settings.lot_size
             else:
                 volume_lots = risk_cash / max(risk_distance * self.settings.contract_size, 1e-12)
-            future = df.iloc[i + 1 : i + 1 + self.settings.horizon]
+            future_start = i + 1
+            future_end = min(i + 1 + self.settings.horizon, len(df))
+            future = df.iloc[future_start:future_end]
             exit_price = float(future.iloc[-1]["close"]) if not future.empty else entry
-            exit_index = i
+            exit_pos = i
             exit_r = 0.0
 
-            for future_idx, row in future.iterrows():
+            for pos in range(future_start, future_end):
+                row = df.iloc[pos]
                 if direction > 0:
                     if row["low"] <= stop:
-                        exit_price, exit_index, exit_r = stop, future_idx, -1.0
+                        exit_price, exit_pos, exit_r = stop, pos, -1.0
                         break
                     if row["high"] >= target:
-                        exit_price, exit_index, exit_r = target, future_idx, self.settings.reward_r
+                        exit_price, exit_pos, exit_r = target, pos, self.settings.reward_r
                         break
                 else:
                     if row["high"] >= stop:
-                        exit_price, exit_index, exit_r = stop, future_idx, -1.0
+                        exit_price, exit_pos, exit_r = stop, pos, -1.0
                         break
                     if row["low"] <= target:
-                        exit_price, exit_index, exit_r = target, future_idx, self.settings.reward_r
+                        exit_price, exit_pos, exit_r = target, pos, self.settings.reward_r
                         break
             else:
                 exit_r = direction * (exit_price - entry) / risk_distance
@@ -98,7 +101,7 @@ class BacktestEngine:
             trades.append(
                 {
                     "entry_time": df.iloc[i]["time"],
-                    "exit_time": df.iloc[exit_index]["time"] if exit_index < len(df) else df.iloc[-1]["time"],
+                    "exit_time": df.iloc[exit_pos]["time"] if exit_pos < len(df) else df.iloc[-1]["time"],
                     "direction": "buy" if direction > 0 else "sell",
                     "direction_value": direction,
                     "volume_lots": volume_lots,
@@ -116,7 +119,7 @@ class BacktestEngine:
                     "equity": equity,
                 }
             )
-            i = max(exit_index + 1, i + 1)
+            i = max(exit_pos + 1, i + 1)
 
         equity_curve = pd.DataFrame(equity_records)
         trades_df = pd.DataFrame(trades)
