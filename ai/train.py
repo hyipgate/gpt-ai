@@ -10,6 +10,7 @@ import pandas as pd
 from lightgbm import LGBMClassifier
 from sklearn.metrics import classification_report
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.inspection import permutation_importance
 from xgboost import XGBClassifier
 
 from backtesting.walkforward import WalkForwardConfig, walk_forward_validate
@@ -179,3 +180,18 @@ def select_informative_features(
     if len(useful) < min_features:
         useful = importance["feature"].head(min_features).tolist()
     return useful[:max_features]
+
+
+def permutation_importance_table(model: object, X: pd.DataFrame, y: pd.Series, n_repeats: int = 8) -> pd.DataFrame:
+    result = permutation_importance(model, X, y, n_repeats=n_repeats, random_state=42, scoring="average_precision")
+    return (
+        pd.DataFrame(
+            {
+                "feature": list(X.columns),
+                "importance_mean": result.importances_mean,
+                "importance_std": result.importances_std,
+            }
+        )
+        .sort_values("importance_mean", ascending=False)
+        .reset_index(drop=True)
+    )

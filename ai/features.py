@@ -44,6 +44,16 @@ FEATURE_COLUMNS = [
     "regime_range",
     "regime_high_vol_manipulation",
     "regime_id",
+    "equal_high_low_compression",
+    "inducement_score",
+    "sweep_efficiency",
+    "displacement_velocity",
+    "imbalance_persistence",
+    "liquidity_proximity_score",
+    "failed_auction",
+    "dealing_range_position",
+    "distance_from_equilibrium_atr",
+    "session_positioning_score",
 ]
 
 
@@ -135,6 +145,36 @@ def add_context_features(df: pd.DataFrame) -> pd.DataFrame:
         (out["setup_direction"].gt(0) & (series("liquidity_sweep_low").astype(bool) | series("equal_low").astype(bool)))
         | (out["setup_direction"].lt(0) & (series("liquidity_sweep_high").astype(bool) | series("equal_high").astype(bool)))
     ).astype(int)
+    equal_events = series("equal_high").astype(bool).astype(int) + series("equal_low").astype(bool).astype(int)
+    out["equal_high_low_compression"] = equal_events.rolling(20, min_periods=1).sum() / 20.0
+    out["inducement_score"] = (out["equal_high_low_compression"] + series("liquidity_or_inducement")).clip(0, 1)
+    sweep_range = (out["high"] - out["low"]).replace(0, np.nan)
+    sweep_rejection = np.where(
+        series("liquidity_sweep_high").astype(bool),
+        (out["high"] - out["close"]) / sweep_range,
+        np.where(series("liquidity_sweep_low").astype(bool), (out["close"] - out["low"]) / sweep_range, 0.0),
+    )
+    out["sweep_efficiency"] = pd.Series(sweep_rejection, index=out.index).replace([np.inf, -np.inf], np.nan).fillna(0).clip(0, 1)
+    out["displacement_velocity"] = out["candle_displacement"].diff().fillna(0).clip(-3, 3)
+    imbalance_active = (series("fvg_direction").ne(0) | series("bullish_fvg").astype(bool) | series("bearish_fvg").astype(bool)).astype(int)
+    out["imbalance_persistence"] = imbalance_active.rolling(8, min_periods=1).sum() / 8.0
+    nearest_distance = out["distance_to_liquidity_atr"].replace([np.inf, -np.inf], np.nan).fillna(10)
+    out["liquidity_proximity_score"] = (1 / (1 + nearest_distance)).clip(0, 1)
+    out["failed_auction"] = (
+        (series("liquidity_sweep_high").astype(bool) & out["close"].lt(out["open"]))
+        | (series("liquidity_sweep_low").astype(bool) & out["close"].gt(out["open"]))
+    ).astype(int)
+    rolling_high = out["high"].rolling(100, min_periods=20).max()
+    rolling_low = out["low"].rolling(100, min_periods=20).min()
+    dealing_range = (rolling_high - rolling_low).replace(0, np.nan)
+    out["dealing_range_position"] = ((out["close"] - rolling_low) / dealing_range).clip(0, 1)
+    out["distance_from_equilibrium_atr"] = ((out["close"] - ((rolling_high + rolling_low) / 2)).abs() / atr).replace([np.inf, -np.inf], np.nan)
+    out["session_positioning_score"] = (
+        0.4 * series("session_london")
+        + 0.5 * series("session_new_york")
+        + 0.7 * series("session_overlap")
+        + 0.15 * series("session_asia")
+    ).clip(0, 1)
     for column in ("regime_trend_up", "regime_trend_down", "regime_range", "regime_high_vol_manipulation"):
         out[column] = series(column)
     out["regime_id"] = series("regime_id")

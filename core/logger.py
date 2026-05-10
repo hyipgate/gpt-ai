@@ -39,6 +39,11 @@ trades_table = Table(
     Column("volume", Float),
     Column("spread_points", Float),
     Column("slippage_points", Float),
+    Column("setup_score", Float),
+    Column("expected_r", Float),
+    Column("regime", String(64)),
+    Column("execution_risk", Float),
+    Column("quality_tier", String(16)),
     Column("profit", Float),
     Column("exit_r", Float),
     Column("exit_price", Float),
@@ -82,6 +87,11 @@ class TradeLog:
     volume: float
     spread_points: float
     slippage_points: float = 0.0
+    setup_score: float | None = None
+    expected_r: float | None = None
+    regime: str | None = None
+    execution_risk: float | None = None
+    quality_tier: str | None = None
     profit: float | None = None
     exit_r: float | None = None
     exit_price: float | None = None
@@ -107,6 +117,11 @@ class TradingJournal:
             "exit_price": "REAL",
             "exit_reason": "TEXT",
             "closed_at": "TIMESTAMP",
+            "setup_score": "REAL",
+            "expected_r": "REAL",
+            "regime": "TEXT",
+            "execution_risk": "REAL",
+            "quality_tier": "TEXT",
         }
         with self.engine.begin() as conn:
             existing = {row[1] for row in conn.execute(text("PRAGMA table_info(trades)"))}

@@ -66,7 +66,7 @@ class ExecutionEngine:
             "magic": self.trading_config.magic_number,
             "comment": request.comment,
             "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": mt5.ORDER_FILLING_IOC,
+            "type_filling": mt5.ORDER_FILLING_FOK,
         }
         result = None
         for attempt in range(self.retries + 1):

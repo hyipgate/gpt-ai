@@ -23,7 +23,8 @@ class ModelScorer:
         if isinstance(payload, dict) and "model" in payload:
             self.model = payload["model"]
             self.features = payload.get("features")
-            threshold = payload.get("threshold", threshold)
+            #threshold = payload.get("threshold", threshold)
+            self.threshold = threshold
             self.regime_models = payload.get("regime_models", {})
             self.regime_classifier = payload.get("regime_classifier")
             self.model_weights = payload.get("model_weights", {"global": 0.65, "regime": 0.35})

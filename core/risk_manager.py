@@ -60,6 +60,40 @@ class RiskManager:
         raw_lots = cash_risk / (stop_distance * contract_size)
         return round(max(raw_lots, 0.0), 2)
 
+    def dynamic_risk_fraction(
+        self,
+        confidence: float,
+        regime_quality: float = 0.5,
+        execution_risk: float = 0.5,
+        volatility_percentile: float = 0.5,
+    ) -> float:
+        quality_multiplier = 0.35 + 0.65 * max(0.0, min(confidence, 1.0))
+        regime_multiplier = 0.50 + 0.70 * max(0.0, min(regime_quality, 1.0))
+        execution_penalty = 1.0 - 0.65 * max(0.0, min(execution_risk, 1.0))
+        volatility_penalty = 1.0 - 0.35 * max(0.0, min(volatility_percentile, 1.0))
+        dynamic = self.config.risk_per_trade * quality_multiplier * regime_multiplier * execution_penalty * volatility_penalty
+        return max(self.config.risk_per_trade * 0.15, min(dynamic, self.config.risk_per_trade * 1.50))
+
+    def position_size_dynamic(
+        self,
+        equity: float,
+        entry: float,
+        stop: float,
+        point: float,
+        contract_size: float,
+        confidence: float,
+        regime_quality: float,
+        execution_risk: float,
+        volatility_percentile: float,
+    ) -> float:
+        stop_distance = abs(entry - stop)
+        if stop_distance <= 0 or point <= 0 or contract_size <= 0:
+            return 0.0
+        risk_fraction = self.dynamic_risk_fraction(confidence, regime_quality, execution_risk, volatility_percentile)
+        raw_lots = (equity * risk_fraction) / (stop_distance * contract_size)
+        #return round(max(raw_lots, 0.0), 2)
+        return max(round(raw_lots, 2), 0.01)
+
     def validate(self, state: RiskState, threshold: float, proposed_size: float = 0.0) -> RiskDecision:
         if self._kill_switch_active():
             return RiskDecision(False, "kill switch file is active")

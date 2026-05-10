@@ -5,8 +5,10 @@ import argparse
 from ai.features import build_features
 from ai.labels import LabelConfig, create_outcome_labels, create_quant_labels
 from ai.evaluate import EvaluationConfig, classification_metrics, optimize_threshold
+from ai.expectancy_model import ExpectancyModel
 from ai.regime import detect_market_regime
 from ai.setup_filter import SetupFilterConfig, filter_valid_setups
+from ai.mfe_mae import ExcursionConfig, calculate_mfe_mae, expectancy_from_excursions
 from ai.train import feature_importance, make_model, select_informative_features, train_quality_bundle
 from app.live_trader import build_structure
 from backtesting.walkforward import WalkForwardConfig, walk_forward_validate
@@ -91,6 +93,8 @@ def main() -> None:
     y_candidates = outcomes.loc[setup_mask, "label"].astype(int)
     regimes = structured.loc[setup_mask, "regime_id"].astype(int)
     directions = outcomes["direction"].where(setup_mask, 0).fillna(0).astype(int)
+    excursions = calculate_mfe_mae(structured, directions, ExcursionConfig(horizon=48))
+    expected_r = expectancy_from_excursions(excursions, reward_r=1.5).loc[setup_mask]
     if len(X_candidates) < 100:
         raise ValueError(f"Only {len(X_candidates)} valid setups found. Increase bars or loosen setup filter thresholds.")
     if config.research.use_feature_pruning:
@@ -174,12 +178,17 @@ def main() -> None:
         threshold=selected_threshold,
     )
     model = bundle["setup_model"]
+    expectancy_model = ExpectancyModel().fit(X_candidates, expected_r)
+    expectancy_path = "ai/models/expectancy_model.pkl" if approved_for_production else "ai/models/rejected_expectancy_model.pkl"
+    expectancy_model.save(expectancy_path)
+    expectancy_metrics = expectancy_model.evaluate(X_candidates, expected_r)
     print("Selected threshold:", selected_threshold)
     print("Valid setups:", len(X_candidates), "positive_rate:", round(float(y_candidates.mean()), 4))
     print("Selected features:", selected_features)
     print("Walk-forward backtest:", evaluation["backtest"])
     print("Walk-forward classification:", evaluation["classification"])
     print("Production approved:", approved_for_production, "saved_model:", model_path)
+    print("Expectancy model:", expectancy_metrics, "saved_model:", expectancy_path)
     print(feature_importance(model, list(X_candidates.columns)).head(20).to_string(index=False))
 
 

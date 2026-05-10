@@ -20,7 +20,7 @@ class TradingConfig:
     require_mtf_alignment: bool = False
     bars: int = 5000
     paper_mode: bool = True
-    confidence_threshold: float = 0.70
+    confidence_threshold: float = 0.30
     magic_number: int = 260507
     allowed_sessions: tuple[str, ...] = ("london", "new_york", "overlap")
 
@@ -60,6 +60,16 @@ class ResearchConfig:
 
 
 @dataclass(frozen=True)
+class HybridConfig:
+    enabled: bool = True
+    render_chart: bool = True
+    show_rsi: bool = True
+    lookback_candles: int = 200
+    use_trained_model: bool = True
+    trained_model_path: str = "ai/models/local_vision_model.pkl"
+
+
+@dataclass(frozen=True)
 class BacktestConfig:
     initial_equity: float = 10_000.0
     commission_per_lot: float = 7.0
@@ -69,12 +79,14 @@ class BacktestConfig:
     lot_size: float = 0.01
     contract_size: float = 100.0
     sizing_mode: str = "fixed_lot"
+    #fixed_risk_usd: float = 10.0
 
 
 @dataclass(frozen=True)
 class PathConfig:
     model_path: str = "ai/models/model.pkl"
     database_url: str = "sqlite:///database/trading_journal.sqlite"
+    chart_snapshot_dir: str = "logs/chart_snapshots"
 
 
 @dataclass(frozen=True)
@@ -83,6 +95,7 @@ class AppConfig:
     risk: RiskConfig = field(default_factory=RiskConfig)
     smc: SMCConfig = field(default_factory=SMCConfig)
     research: ResearchConfig = field(default_factory=ResearchConfig)
+    hybrid: HybridConfig = field(default_factory=HybridConfig)
     backtest: BacktestConfig = field(default_factory=BacktestConfig)
     paths: PathConfig = field(default_factory=PathConfig)
 
@@ -137,6 +150,11 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         if isinstance(value, bool):
             continue
         raw["research"][key] = str(value).lower() in {"1", "true", "yes", "on"}
+    for key, value in list(raw.get("hybrid", {}).items()):
+        if isinstance(value, bool):
+            continue
+        if key.startswith("render") or key.startswith("use_") or key == "enabled" or key == "show_rsi":
+            raw["hybrid"][key] = str(value).lower() in {"1", "true", "yes", "on"}
     for key, value in list(raw.get("risk", {}).items()):
         if key.startswith("use_") and not isinstance(value, bool):
             raw["risk"][key] = str(value).lower() in {"1", "true", "yes", "on"}
@@ -146,6 +164,7 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         risk=RiskConfig(**raw.get("risk", {})),
         smc=SMCConfig(**raw.get("smc", {})),
         research=ResearchConfig(**raw.get("research", {})),
+        hybrid=HybridConfig(**raw.get("hybrid", {})),
         backtest=BacktestConfig(**raw.get("backtest", {})),
         paths=PathConfig(**raw.get("paths", {})),
     )

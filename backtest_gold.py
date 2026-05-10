@@ -8,13 +8,16 @@ import numpy as np
 import pandas as pd
 
 from ai.features import add_session_features, build_features
+from ai.local_vision_model import local_vision_model_path
 from ai.regime import detect_market_regime
 from ai.setup_filter import SetupFilterConfig, filter_valid_setups, infer_setup_direction
 from app.live_trader import build_structure
 from backtesting.engine import BacktestEngine, BacktestSettings, gold_pnl
+from backtesting.monte_carlo import MonteCarloConfig, monte_carlo_trade_resample
 from core.config import load_config, resolve_path
 from core.mt5_connector import MT5Connector
 from market.datafeed import MT5DataFeed, MarketDataRequest
+from market.mtf_features import add_mtf_backtest_features, mtf_alignment_series
 
 
 def direction_series(df: pd.DataFrame) -> pd.Series:
@@ -115,6 +118,13 @@ def main() -> None:
     parser.add_argument("--spread-points", type=float, default=None)
     parser.add_argument("--slippage-points", type=float, default=None)
     parser.add_argument("--max-spread-points", type=float, default=None)
+    parser.add_argument("--hybrid-charts", action="store_true", help="Render a chart PNG for each backtest entry.")
+    parser.add_argument("--no-rsi", action="store_true", help="Render/export chart images without the RSI panel.")
+    parser.add_argument("--vision-filter", action="store_true", help="Use trained local vision as an entry filter.")
+    parser.add_argument("--vision-threshold", type=float, default=None)
+    parser.add_argument("--vision-model-path", default=None)
+    parser.add_argument("--export-vision-dataset", action="store_true", help="Render backtest entry images and auto-label them for CNN training.")
+    parser.add_argument("--vision-feedback-path", default="ai/models/auto_image_feedback.csv")
     args = parser.parse_args()
 
     config = load_config()
@@ -123,6 +133,7 @@ def main() -> None:
     bars = args.bars or config.trading.bars
     lot_size = args.lot or config.backtest.lot_size
     contract_size = args.contract_size or config.backtest.contract_size
+    vision_model_path = args.vision_model_path or local_vision_model_path(symbol, timeframe, config.hybrid.trained_model_path)
 
     print("PnL sanity check:")
     print(f"BUY  4700 -> 4701 @ {lot_size} lot = ${gold_pnl(4700, 4701, 1, lot_size, contract_size):.2f}")
@@ -131,11 +142,19 @@ def main() -> None:
     connector = MT5Connector()
     connector.initialize()
     try:
-        raw = MT5DataFeed(connector).get_rates(MarketDataRequest(symbol=symbol, timeframe=timeframe, bars=bars))
+        feed = MT5DataFeed(connector)
+        raw = feed.get_rates(MarketDataRequest(symbol=symbol, timeframe=timeframe, bars=bars))
+        higher_timeframe_data = {
+            higher_timeframe: feed.get_rates(MarketDataRequest(symbol=symbol, timeframe=higher_timeframe, bars=bars))
+            for higher_timeframe in config.trading.higher_timeframes
+            if higher_timeframe != timeframe
+        }
     finally:
         connector.shutdown()
 
     structured = add_session_features(build_structure(raw, config))
+    if higher_timeframe_data:
+        structured = add_mtf_backtest_features(structured, higher_timeframe_data, config)
     if config.research.use_regime_detection:
         structured = detect_market_regime(structured)
     else:
@@ -186,6 +205,20 @@ def main() -> None:
         threshold = args.threshold if args.threshold is not None else model_threshold
         directions = structured["setup_direction"].where(structured["valid_setup"].astype(bool), 0).astype(int)
 
+    if config.trading.require_mtf_alignment and higher_timeframe_data:
+        mtf_ok, mtf_score = mtf_alignment_series(
+            structured,
+            directions,
+            tuple(higher_timeframe_data.keys()),
+        )
+        structured["mtf_score"] = mtf_score
+        structured["mtf_aligned"] = mtf_ok
+        probabilities = probabilities.where(mtf_ok, 0.0)
+        directions = directions.where(mtf_ok, 0).astype(int)
+    else:
+        structured["mtf_score"] = 0
+        structured["mtf_aligned"] = True
+
     settings = BacktestSettings(
         initial_equity=config.backtest.initial_equity,
         risk_per_trade=config.risk.risk_per_trade,
@@ -200,18 +233,44 @@ def main() -> None:
         sizing_mode="fixed_lot",
         max_spread_points=(config.risk.max_spread_points if config.risk.use_spread_filter else None) if args.max_spread_points is None else args.max_spread_points,
         min_atr_points=config.risk.min_atr_points,
+        symbol=symbol,
+        timeframe=timeframe,
+        hybrid_enabled=config.hybrid.enabled,
+        hybrid_render_charts=args.hybrid_charts and config.hybrid.render_chart,
+        hybrid_show_rsi=config.hybrid.show_rsi and not args.no_rsi,
+        hybrid_use_trained_model=config.hybrid.use_trained_model,
+        hybrid_trained_model_path=vision_model_path,
+        hybrid_filter_trained_vision=args.vision_filter,
+        hybrid_filter_threshold=args.vision_threshold,
+        hybrid_lookback_candles=config.hybrid.lookback_candles,
+        hybrid_chart_dir=f"{config.paths.chart_snapshot_dir}/backtests",
+        export_vision_dataset=args.export_vision_dataset,
+        vision_dataset_dir=f"{config.paths.chart_snapshot_dir}/vision_dataset/{symbol}_{timeframe}",
+        vision_feedback_path=args.vision_feedback_path,
     )
     result = BacktestEngine(settings).run(structured, probabilities, directions)
     output_dir = resolve_path("ai/models")
     stem = "gold_backtest_rules" if args.entry_mode == "rules" else "gold_backtest"
     result["trades"].to_csv(output_dir / f"{stem}_trades.csv", index=False)
     result["equity_curve"].to_csv(output_dir / f"{stem}_equity.csv", index=False)
+    mc = monte_carlo_trade_resample(result["trades"], MonteCarloConfig(initial_equity=config.backtest.initial_equity))
+    if not mc.empty:
+        mc.to_csv(output_dir / f"{stem}_monte_carlo.csv", index=False)
     (output_dir / f"{stem}_summary.json").write_text(json.dumps(result["metrics"], indent=2), encoding="utf-8")
 
     print("Backtest metrics:")
     print(json.dumps(result["metrics"], indent=2))
     print(f"Mode: {args.entry_mode} reward_r={args.reward_r} profile={args.rules_profile}")
     print(f"Saved: {output_dir / f'{stem}_trades.csv'}")
+    if args.hybrid_charts:
+        chart_count = int(result["trades"].get("hybrid_chart_path", pd.Series(dtype=str)).astype(bool).sum()) if not result["trades"].empty else 0
+        print(f"Hybrid charts: {chart_count} saved under {resolve_path(f'{config.paths.chart_snapshot_dir}/backtests')}")
+    else:
+        print("Hybrid charts: disabled; pass --hybrid-charts to render PNG snapshots.")
+    if args.export_vision_dataset:
+        dataset_count = int(result["trades"].get("vision_dataset_path", pd.Series(dtype=str)).astype(bool).sum()) if not result["trades"].empty else 0
+        print(f"Vision dataset: {dataset_count} labeled images saved under {resolve_path(f'{config.paths.chart_snapshot_dir}/vision_dataset/{symbol}_{timeframe}')}")
+        print(f"Vision feedback: {resolve_path(args.vision_feedback_path)}")
 
 
 if __name__ == "__main__":

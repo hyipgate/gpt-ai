@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
 import pandas as pd
 
+from ai.chart_renderer import render_candlestick_snapshot
+from ai.image_feedback import load_image_feedback, save_image_feedback
+from ai.hybrid import build_hybrid_analysis
 from backtesting.metrics import summarize_trades
+from core.config import resolve_path
 
 
 @dataclass(frozen=True)
@@ -23,6 +28,20 @@ class BacktestSettings:
     sizing_mode: str = "fixed_lot"
     max_spread_points: float | None = None
     min_atr_points: float | None = None
+    symbol: str = ""
+    timeframe: str = ""
+    hybrid_enabled: bool = False
+    hybrid_render_charts: bool = False
+    hybrid_show_rsi: bool = True
+    hybrid_use_trained_model: bool = True
+    hybrid_trained_model_path: str = "ai/models/local_vision_model.pkl"
+    hybrid_filter_trained_vision: bool = False
+    hybrid_filter_threshold: float | None = None
+    hybrid_lookback_candles: int = 200
+    hybrid_chart_dir: str = "logs/chart_snapshots/backtests"
+    export_vision_dataset: bool = False
+    vision_dataset_dir: str = "logs/chart_snapshots/vision_dataset"
+    vision_feedback_path: str = "ai/models/auto_image_feedback.csv"
 
 
 def gold_pnl(entry: float, exit_price: float, direction: int, lot_size: float = 0.01, contract_size: float = 100.0) -> float:
@@ -38,6 +57,7 @@ class BacktestEngine:
         equity = self.settings.initial_equity
         equity_records = []
         trades = []
+        vision_feedback_rows = []
         costs_points = self.settings.spread_points + self.settings.slippage_points
         atr = df.get("atr", (df["high"] - df["low"]).rolling(14).mean()).bfill()
 
@@ -59,6 +79,32 @@ class BacktestEngine:
             if self.settings.min_atr_points is not None and atr_points < self.settings.min_atr_points:
                 i += 1
                 continue
+            hybrid_analysis = None
+            if self.settings.hybrid_enabled:
+                hybrid_analysis = build_hybrid_analysis(
+                    df.iloc[: i + 1],
+                    symbol=self.settings.symbol,
+                    timeframe=self.settings.timeframe,
+                    chart_dir=self.settings.hybrid_chart_dir,
+                    lookback=self.settings.hybrid_lookback_candles,
+                    render_chart=self.settings.hybrid_render_charts,
+                    show_rsi=self.settings.hybrid_show_rsi,
+                    use_trained_model=self.settings.hybrid_use_trained_model,
+                    trained_model_path=self.settings.hybrid_trained_model_path,
+                )
+                if self.settings.hybrid_filter_trained_vision:
+                    trained = hybrid_analysis.trained_vision
+                    if trained is None:
+                        i += 1
+                        continue
+                    threshold = (
+                        self.settings.hybrid_filter_threshold
+                        if self.settings.hybrid_filter_threshold is not None
+                        else trained.threshold
+                    )
+                    if trained.probability < threshold:
+                        i += 1
+                        continue
             risk_cash = equity * self.settings.risk_per_trade
             entry_mid = float(df.iloc[i]["close"])
             entry = entry_mid + direction * costs_points * self.settings.point_value
@@ -68,25 +114,28 @@ class BacktestEngine:
                 volume_lots = self.settings.lot_size
             else:
                 volume_lots = risk_cash / max(risk_distance * self.settings.contract_size, 1e-12)
-            future = df.iloc[i + 1 : i + 1 + self.settings.horizon]
+            future_start = i + 1
+            future_end = min(i + 1 + self.settings.horizon, len(df))
+            future = df.iloc[future_start:future_end]
             exit_price = float(future.iloc[-1]["close"]) if not future.empty else entry
-            exit_index = i
+            exit_pos = i
             exit_r = 0.0
 
-            for future_idx, row in future.iterrows():
+            for pos in range(future_start, future_end):
+                row = df.iloc[pos]
                 if direction > 0:
                     if row["low"] <= stop:
-                        exit_price, exit_index, exit_r = stop, future_idx, -1.0
+                        exit_price, exit_pos, exit_r = stop, pos, -1.0
                         break
                     if row["high"] >= target:
-                        exit_price, exit_index, exit_r = target, future_idx, self.settings.reward_r
+                        exit_price, exit_pos, exit_r = target, pos, self.settings.reward_r
                         break
                 else:
                     if row["high"] >= stop:
-                        exit_price, exit_index, exit_r = stop, future_idx, -1.0
+                        exit_price, exit_pos, exit_r = stop, pos, -1.0
                         break
                     if row["low"] <= target:
-                        exit_price, exit_index, exit_r = target, future_idx, self.settings.reward_r
+                        exit_price, exit_pos, exit_r = target, pos, self.settings.reward_r
                         break
             else:
                 exit_r = direction * (exit_price - entry) / risk_distance
@@ -95,10 +144,38 @@ class BacktestEngine:
             commission = self.settings.commission_per_lot * volume_lots
             pnl = gross_pnl - commission
             equity += pnl
+            vision_dataset_path = ""
+            if self.settings.export_vision_dataset:
+                entry_time = pd.Timestamp(df.iloc[i]["time"])
+                stamp = entry_time.tz_convert("UTC").strftime("%Y%m%d_%H%M%S") if entry_time.tzinfo else entry_time.strftime("%Y%m%d_%H%M%S")
+                direction_name = "buy" if direction > 0 else "sell"
+                filename = f"{self.settings.symbol}_{self.settings.timeframe}_{stamp}_{direction_name}.png"
+                output_path = resolve_path(self.settings.vision_dataset_dir) / filename
+                vision_dataset_path = str(
+                    render_candlestick_snapshot(
+                        df.iloc[: i + 1],
+                        output_path,
+                        self.settings.symbol,
+                        self.settings.timeframe,
+                        self.settings.hybrid_lookback_candles,
+                        show_rsi=self.settings.hybrid_show_rsi,
+                    )
+                )
+                vision_feedback_rows.append(
+                    {
+                        "image_path": vision_dataset_path,
+                        "symbol": self.settings.symbol,
+                        "timeframe": self.settings.timeframe,
+                        "direction": direction_name,
+                        "label": int(exit_r > 0),
+                        "weight": 2.0,
+                        "note": f"auto_backtest exit_r={exit_r:.4f} pnl={pnl:.4f}",
+                    }
+                )
             trades.append(
                 {
                     "entry_time": df.iloc[i]["time"],
-                    "exit_time": df.iloc[exit_index]["time"] if exit_index < len(df) else df.iloc[-1]["time"],
+                    "exit_time": df.iloc[exit_pos]["time"] if exit_pos < len(df) else df.iloc[-1]["time"],
                     "direction": "buy" if direction > 0 else "sell",
                     "direction_value": direction,
                     "volume_lots": volume_lots,
@@ -114,12 +191,26 @@ class BacktestEngine:
                     "commission": commission,
                     "pnl": pnl,
                     "equity": equity,
+                    "hybrid_context": json.dumps(hybrid_analysis.context.to_dict(), default=str) if hybrid_analysis else "",
+                    "hybrid_local_vision": json.dumps(hybrid_analysis.local_vision.to_dict(), default=str) if hybrid_analysis else "",
+                    "hybrid_trained_vision": json.dumps(hybrid_analysis.trained_vision.to_dict(), default=str) if hybrid_analysis and hybrid_analysis.trained_vision else "",
+                    "hybrid_image_vision": json.dumps(hybrid_analysis.image_vision.to_dict(), default=str) if hybrid_analysis and hybrid_analysis.image_vision else "",
+                    "hybrid_cnn_image_vision": json.dumps(hybrid_analysis.cnn_image_vision.to_dict(), default=str) if hybrid_analysis and hybrid_analysis.cnn_image_vision else "",
+                    "hybrid_chart_path": hybrid_analysis.chart_path if hybrid_analysis else "",
+                    "hybrid_prompt": hybrid_analysis.prompt if hybrid_analysis else "",
+                    "vision_dataset_path": vision_dataset_path,
                 }
             )
-            i = max(exit_index + 1, i + 1)
+            i = max(exit_pos + 1, i + 1)
 
         equity_curve = pd.DataFrame(equity_records)
         trades_df = pd.DataFrame(trades)
+        if vision_feedback_rows:
+            existing_feedback = load_image_feedback(self.settings.vision_feedback_path)
+            save_image_feedback(
+                pd.concat([existing_feedback, pd.DataFrame(vision_feedback_rows)], ignore_index=True),
+                self.settings.vision_feedback_path,
+            )
         return {"trades": trades_df, "equity_curve": equity_curve, "metrics": summarize_trades(trades_df, equity_curve)}
 
 

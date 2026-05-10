@@ -5,7 +5,7 @@ trading:
   require_mtf_alignment: true
   bars: 5000
   paper_mode: true
-  confidence_threshold: 0.60
+  confidence_threshold: 0.40
   magic_number: 260507
   allowed_sessions: ["london", "new_york", "overlap","asia"]
 
@@ -14,19 +14,19 @@ risk:
   risk_per_trade: 0.005
   max_daily_loss: 0.03
   max_open_trades: 5
-  use_spread_filter: false
-  max_spread_points: 500
+  use_spread_filter: true
+  max_spread_points: 2500
   min_atr_points: 20
   max_atr_points: 1000
   max_slippage_points: 2000
   kill_switch_file: config/kill_switch
 
 smc:
-  swing_window: 5
+  swing_window: 2
   equal_level_tolerance_atr: 0.12
   liquidity_sweep_lookback: 20
-  order_block_lookback: 12
-  fvg_min_atr_fraction: 0.10
+  order_block_lookback: 20
+  fvg_min_atr_fraction: 0.20
 
 research:
   use_quant_research_pipeline: true
@@ -35,18 +35,28 @@ research:
   use_quant_labels: true
   use_feature_pruning: true
   enforce_production_gate: true
-  require_london_or_ny_for_research: true
+  require_london_or_ny_for_research: false
+
+hybrid:
+  enabled: true
+  render_chart: true
+  show_rsi: false
+  lookback_candles: 200
+  use_trained_model: true
+  trained_model_path: ai/models/local_vision_model.pkl
 
 backtest:
-  initial_equity: 10000
+  initial_equity: 1000
   commission_per_lot: 7.0
   slippage_points: 0
-  spread_points: 0
+  spread_points: 1200
   point_value: 0.01
   lot_size: 0.01
   contract_size: 100
   sizing_mode: fixed_lot
+  #fixed_risk_usd: 10.0
 
 paths:
   model_path: ai/models/model.pkl
   database_url: sqlite:///database/trading_journal.sqlite
+  chart_snapshot_dir: logs/chart_snapshots
